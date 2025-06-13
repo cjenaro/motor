@@ -1,0 +1,56 @@
+# Motor - Coroutine HTTP/1.1 Server 🔧
+
+You are working on **Motor**, the HTTP server core of the Foguete framework.
+
+## Package Purpose
+Motor provides a lightweight, coroutine-based HTTP/1.1 server implementation in pure Lua.
+
+## Key Responsibilities
+- HTTP/1.1 protocol implementation
+- Coroutine-based request handling
+- Socket management with proper yielding
+- Request/response parsing and formatting
+- Keep-alive connection handling
+
+## Core APIs
+- `motor.serve(opts, handler)` - Start HTTP server
+- `motor.parse_request(socket)` - Parse incoming HTTP request
+- `motor.send_response(socket, response)` - Send HTTP response
+- `motor.create_server(host, port)` - Create server socket
+
+## Coding Guidelines
+- **ALWAYS** use coroutines for socket operations
+- **MUST** yield on every socket I/O operation
+- Use `coroutine.wrap()` for request handlers
+- Implement proper error handling for network failures
+- Support HTTP/1.1 keep-alive connections
+- Parse headers case-insensitively
+- Handle chunked transfer encoding
+
+## Architecture Patterns
+```lua
+local motor = {}
+
+function motor.serve(opts, handler)
+    local server = motor.create_server(opts.host or "127.0.0.1", opts.port or 8080)
+    
+    while true do
+        local client = server:accept()
+        coroutine.wrap(function()
+            motor.handle_client(client, handler)
+        end)()
+    end
+end
+```
+
+## Testing Requirements
+- Test with multiple concurrent connections
+- Verify proper coroutine yielding
+- Test HTTP/1.1 compliance
+- Benchmark performance vs OpenResty/nginx
+- Test keep-alive connection handling
+
+## Dependencies
+- Pure Lua 5.4/LuaJIT only
+- No external dependencies
+- Use built-in socket libraries 
