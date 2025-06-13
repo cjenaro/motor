@@ -1,8 +1,8 @@
 package = "motor"
-version = "1.0.0-1"
+version = "0.0.1-1"
 source = {
    url = "git+https://github.com/foguete/motor.git",
-   tag = "v1.0.0"
+   tag = "v0.0.1"
 }
 description = {
    summary = "Coroutine-based HTTP/1.1 server engine for the Foguete web framework",
