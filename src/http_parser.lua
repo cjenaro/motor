@@ -42,13 +42,34 @@ function http_parser.parse_request(request_data)
     -- Parse query parameters from path
     local clean_path, query_params = http_parser._parse_path_and_query(path)
     
+    -- Parse request body based on content-type
+    local parsed_body = {}
+    local content_type = http_parser.get_content_type(headers)
+    
+    if body_part and body_part ~= "" then
+        if content_type == "application/x-www-form-urlencoded" then
+            parsed_body = http_parser.parse_form_data(body_part)
+        elseif content_type == "application/json" then
+            local json_data, json_err = http_parser.parse_json(body_part)
+            if json_data then
+                parsed_body = json_data
+            else
+                -- Keep raw body if JSON parsing fails
+                parsed_body = {}
+            end
+        end
+        -- For other content types (multipart/form-data, text/plain, etc.), 
+        -- keep raw body and let application handle it
+    end
+    
     -- Build request table
     local request = {
         method = method,
         path = clean_path,
         query = query_params,
         headers = headers,
-        body = body_part,
+        body = body_part,           -- Raw body for backward compatibility
+        data = parsed_body,         -- Parsed body data
         version = version
     }
     
@@ -194,15 +215,17 @@ function http_parser.parse_json(body)
         return {}
     end
     
-    -- Basic JSON parsing (you might want to use a proper JSON library)
-    local ok, result = pcall(function()
-        return load("return " .. body)()
-    end)
+    -- Use dkjson for safe JSON parsing
+    local ok, json = pcall(require, "dkjson")
+    if not ok then
+        return nil, "JSON library not available"
+    end
     
-    if ok and type(result) == "table" then
+    local result, pos, err = json.decode(body)
+    if result then
         return result
     else
-        return nil, "Invalid JSON"
+        return nil, "Invalid JSON: " .. tostring(err)
     end
 end
 
