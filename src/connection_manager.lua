@@ -1,9 +1,12 @@
 -- Connection Manager for Motor
 -- Handles keep-alive connections and connection pooling
 
+---@class ConnectionManagerClass
 local connection_manager = {}
 
 -- Create a new connection manager
+---@param config MotorConfig? Configuration object
+---@return ConnectionManager
 function connection_manager.new(config)
 	local manager = {
 		connections = {}, -- Active connections
@@ -16,6 +19,9 @@ function connection_manager.new(config)
 end
 
 -- Add a connection to management
+---@param self ConnectionManager
+---@param connection Connection Connection object to add
+---@return string|false Connection ID or false on failure
 function connection_manager:add_connection(connection)
 	if not connection or not connection.socket then
 		return false
@@ -30,6 +36,8 @@ function connection_manager:add_connection(connection)
 end
 
 -- Remove a connection
+---@param self ConnectionManager
+---@param connection Connection Connection object to remove
 function connection_manager:remove_connection(connection)
 	if not connection then
 		return
@@ -39,12 +47,10 @@ function connection_manager:remove_connection(connection)
 	if id and self.connections[id] then
 		-- Close socket if still open
 		if self.connections[id].socket then
-			local ok = pcall(function()
-				self.connections[id].socket:close()
-			end)
-			if not ok then
-				-- Socket already closed or error, ignore
-			end
+		pcall(function()
+			self.connections[id].socket:close()
+		end)
+		-- Ignore close errors - socket may already be closed
 		end
 
 		self.connections[id] = nil
@@ -52,11 +58,14 @@ function connection_manager:remove_connection(connection)
 end
 
 -- Process all active connections
+---@param self ConnectionManager
+---@param handler RequestHandler Request handler function
 function connection_manager:process_connections(handler)
 	local current_time = os.time()
 	local connections_to_remove = {}
 
 	-- Check each connection
+	---@diagnostic disable-next-line: unused-local
 	for id, connection in pairs(self.connections) do
 		if self:_should_close_connection(connection, current_time) then
 			table.insert(connections_to_remove, connection)
@@ -79,6 +88,10 @@ function connection_manager:process_connections(handler)
 end
 
 -- Check if a connection should be closed
+---@param self ConnectionManager
+---@param connection Connection Connection to check
+---@param current_time integer Current timestamp
+---@return boolean True if connection should be closed
 function connection_manager:_should_close_connection(connection, current_time)
 	if not connection.socket then
 		return true
@@ -94,8 +107,8 @@ function connection_manager:_should_close_connection(connection, current_time)
 	local socket = connection.socket
 	socket:settimeout(0) -- Non-blocking check
 
-	local data, err = socket:receive(0)
-	if err == "closed" then
+	local _, socket_err = socket:receive(0)
+	if socket_err == "closed" then
 		return true
 	end
 
@@ -103,6 +116,9 @@ function connection_manager:_should_close_connection(connection, current_time)
 end
 
 -- Process a keep-alive connection for new requests
+---@param self ConnectionManager
+---@param connection Connection Connection to process
+---@param handler RequestHandler Request handler function
 function connection_manager:_process_keep_alive_connection(connection, handler)
 	if not connection.socket or not handler then
 		return
@@ -112,38 +128,41 @@ function connection_manager:_process_keep_alive_connection(connection, handler)
 	socket:settimeout(0) -- Non-blocking
 
 	-- Try to read request line to see if new request is available
-	local line, err = socket:receive("*l")
+	local line, receive_err = socket:receive("*l")
 	if not line then
-		if err ~= "timeout" then
+		if receive_err ~= "timeout" then
 			-- Connection closed or error
 			self:remove_connection(connection)
 		end
-		return
+	return
 	end
-
 	-- We have a new request on keep-alive connection
 	-- Put the line back by creating a new coroutine to handle it
 	local co = coroutine.create(function()
 		self:_handle_keep_alive_request(connection, line, handler)
 	end)
 
-	local ok, err = coroutine.resume(co)
-	if not ok then
-		print("Error handling keep-alive request: " .. tostring(err))
+	local resume_ok, resume_err = coroutine.resume(co)
+	if not resume_ok then
+		print("Error handling keep-alive request: " .. tostring(resume_err))
 		self:remove_connection(connection)
 	end
 end
 
 -- Handle a request on a keep-alive connection
+---@param self ConnectionManager
+---@param connection Connection Connection to handle
+---@param first_line string First line of the request
+---@param handler RequestHandler Request handler function
 function connection_manager:_handle_keep_alive_request(connection, first_line, handler)
 	local socket = connection.socket
 	local request_data = first_line .. "\r\n"
 
 	-- Read rest of headers
 	while true do
-		local line, err = socket:receive("*l")
+		local line, line_err = socket:receive("*l")
 		if not line then
-			if err ~= "timeout" then
+			if line_err ~= "timeout" then
 				self:remove_connection(connection)
 			end
 			return
@@ -160,7 +179,7 @@ function connection_manager:_handle_keep_alive_request(connection, first_line, h
 	local content_length = 0
 	local cl_match = string.match(string.lower(request_data), "content%-length:%s*(%d+)")
 	if cl_match then
-		content_length = tonumber(cl_match)
+		content_length = tonumber(cl_match) or 0
 	end
 
 	-- Read body if present
@@ -172,7 +191,7 @@ function connection_manager:_handle_keep_alive_request(connection, first_line, h
 			return
 		end
 
-		local body, err = socket:receive(content_length)
+		local body = socket:receive(content_length)
 		if not body then
 			self:remove_connection(connection)
 			return
@@ -182,7 +201,7 @@ function connection_manager:_handle_keep_alive_request(connection, first_line, h
 	end
 
 	-- Parse and handle the request
-	local http_parser = require("motor.http_parser")
+	local http_parser = require("http_parser")
 	local request, parse_err = http_parser.parse_request(request_data)
 
 	if not request then
@@ -214,15 +233,19 @@ function connection_manager:_handle_keep_alive_request(connection, first_line, h
 end
 
 -- Generate unique connection ID
+---@param self ConnectionManager
+---@return string Unique connection ID
 function connection_manager:_generate_connection_id()
 	return string.format("conn_%d_%d", os.time(), math.random(10000, 99999))
 end
 
 -- Clean up stale connections
+---@param self ConnectionManager
 function connection_manager:_cleanup_stale_connections()
 	local current_time = os.time()
 	local stale_connections = {}
 
+	---@diagnostic disable-next-line: unused-local
 	for id, connection in pairs(self.connections) do
 		if self:_should_close_connection(connection, current_time) then
 			table.insert(stale_connections, connection)
@@ -240,10 +263,14 @@ function connection_manager:_cleanup_stale_connections()
 end
 
 -- Safely call handler with error handling
+---@param self ConnectionManager
+---@param handler RequestHandler Request handler function
+---@param request HttpRequest HTTP request object
+---@return HttpResponse HTTP response object
 function connection_manager:_safe_handler_call(handler, request)
-	local ok, response = pcall(handler, request)
+	local call_ok, response = pcall(handler, request)
 
-	if not ok then
+	if not call_ok then
 		print("Handler error: " .. tostring(response))
 		return {
 			status = 500,
@@ -269,6 +296,10 @@ function connection_manager:_safe_handler_call(handler, request)
 end
 
 -- Send HTTP response
+---@param self ConnectionManager
+---@param socket userdata TCP socket
+---@param response HttpResponse HTTP response object
+---@return boolean Success status
 function connection_manager:_send_response(socket, response)
 	-- Build status line
 	local status_texts = {
@@ -302,12 +333,17 @@ function connection_manager:_send_response(socket, response)
 
 	-- Send complete response
 	local full_response = status_line .. headers_str .. "\r\n" .. body
-	local bytes_sent, err = socket:send(full_response)
+	local bytes_sent = socket:send(full_response)
 
 	return bytes_sent ~= nil
 end
 
 -- Send error response
+---@param self ConnectionManager
+---@param socket userdata TCP socket
+---@param status integer HTTP status code
+---@param message string Error message
+---@return boolean Success status
 function connection_manager:_send_error_response(socket, status, message)
 	local response = {
 		status = status,
@@ -319,6 +355,8 @@ function connection_manager:_send_error_response(socket, status, message)
 end
 
 -- Get connection statistics
+---@param self ConnectionManager
+---@return ConnectionStats
 function connection_manager:get_stats()
 	local total_connections = 0
 	local keep_alive_connections = 0

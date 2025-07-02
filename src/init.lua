@@ -6,6 +6,7 @@ local http_parser = require("motor.http_parser")
 local connection_manager = require("motor.connection_manager")
 local hot_reload = require("motor.hot_reload")
 
+---@class Motor
 local motor = {}
 
 -- Package version
@@ -21,9 +22,13 @@ local DEFAULT_CONFIG = {
 	socket_timeout = 1.0,
 	hot_reload = false,
 	hot_reload_interval = 0.5, -- Check for changes every 500ms
+	hot_reload_app_root = nil,
+	hot_reload_watch_dirs = nil,
 }
 
 -- Main server function
+---@param opts MotorConfig|RequestHandler Server configuration or handler function
+---@param handler RequestHandler? Request handler function (if opts is config)
 function motor.serve(opts, handler)
 	if type(opts) == "function" then
 		handler = opts
@@ -34,6 +39,10 @@ function motor.serve(opts, handler)
 	local config = {}
 	for k, v in pairs(DEFAULT_CONFIG) do
 		config[k] = opts[k] or v
+	end
+	-- Also include any additional options not in defaults
+	for k, v in pairs(opts) do
+		config[k] = v
 	end
 
 	-- Validate handler
@@ -61,14 +70,14 @@ function motor.serve(opts, handler)
 	server:settimeout(0) -- Non-blocking
 
 	-- Bind and listen
-	local ok, err = server:bind(config.host, config.port)
-	if not ok then
-		error("Failed to bind to " .. config.host .. ":" .. config.port .. ": " .. err)
+	local bind_ok, bind_err = server:bind(config.host, config.port)
+	if not bind_ok then
+		error("Failed to bind to " .. config.host .. ":" .. config.port .. ": " .. bind_err)
 	end
 
-	ok, err = server:listen(config.backlog)
-	if not ok then
-		error("Failed to listen: " .. err)
+	local listen_ok, listen_err = server:listen(config.backlog)
+	if not listen_ok then
+		error("Failed to listen: " .. listen_err)
 	end
 
 	-- Connection manager for keep-alive
@@ -80,7 +89,7 @@ function motor.serve(opts, handler)
 	-- Main server loop
 	while true do
 		-- Use select to wait for activity (non-blocking with timeout)
-		local ready_sockets, _, err = socket.select({ server }, {}, 0.1) -- 100ms timeout
+		local ready_sockets = socket.select({ server }, {}, 0.1) -- 100ms timeout
 
 		if ready_sockets and #ready_sockets > 0 then
 			-- Accept new connections
@@ -91,9 +100,9 @@ function motor.serve(opts, handler)
 					motor._handle_connection(client, handler, config, conn_mgr)
 				end)
 
-				local ok, err = coroutine.resume(co)
-				if not ok then
-					print("Error in connection handler: " .. tostring(err))
+				local resume_ok, resume_err = coroutine.resume(co)
+				if not resume_ok then
+					print("Error in connection handler: " .. tostring(resume_err))
 				end
 			end
 		end
@@ -113,6 +122,10 @@ function motor.serve(opts, handler)
 end
 
 -- Handle individual connection
+---@param client userdata TCP socket client
+---@param handler RequestHandler Request handler function
+---@param config MotorConfig Server configuration
+---@param conn_mgr ConnectionManager Connection manager instance
 function motor._handle_connection(client, handler, config, conn_mgr)
 	client:settimeout(config.socket_timeout)
 
@@ -124,10 +137,10 @@ function motor._handle_connection(client, handler, config, conn_mgr)
 
 	while true do
 		-- Read HTTP request
-		local request_data, err = motor._read_request(client, config)
+		local request_data, read_err = motor._read_request(client, config)
 		if not request_data then
-			if err ~= "timeout" then
-				print("Error reading request: " .. tostring(err))
+			if read_err ~= "timeout" then
+				print("Error reading request: " .. tostring(read_err))
 			end
 			break
 		end
@@ -168,6 +181,9 @@ function motor._handle_connection(client, handler, config, conn_mgr)
 end
 
 -- Safely call the request handler
+---@param handler RequestHandler Request handler function
+---@param request HttpRequest HTTP request object
+---@return HttpResponse HTTP response object
 function motor._safe_handler_call(handler, request)
 	local ok, response = pcall(handler, request)
 
@@ -198,10 +214,12 @@ function motor._safe_handler_call(handler, request)
 end
 
 -- Read complete HTTP request from socket
+---@param client userdata TCP socket client
+---@param config MotorConfig Server configuration
+---@return string|nil, string? Request data or nil with error message
 function motor._read_request(client, config)
 	local request_data = ""
 	local content_length = 0
-	local headers_complete = false
 
 	while true do
 		local chunk, err = client:receive("*l") -- Read line
@@ -213,14 +231,13 @@ function motor._read_request(client, config)
 
 		-- Check for end of headers
 		if chunk == "" then
-			headers_complete = true
 			break
 		end
 
 		-- Extract content-length if present
 		local cl_match = string.match(string.lower(chunk), "content%-length:%s*(%d+)")
 		if cl_match then
-			content_length = tonumber(cl_match)
+			content_length = tonumber(cl_match) or 0
 		end
 
 		-- Prevent request size attacks
@@ -235,9 +252,9 @@ function motor._read_request(client, config)
 			return nil, "Request body too large"
 		end
 
-		local body, err = client:receive(content_length)
+		local body, body_err = client:receive(content_length)
 		if not body then
-			return nil, err
+			return nil, body_err
 		end
 
 		request_data = request_data .. body
@@ -247,7 +264,12 @@ function motor._read_request(client, config)
 end
 
 -- Send HTTP response
+---@param client userdata TCP socket client
+---@param response HttpResponse HTTP response object
+---@param request HttpRequest HTTP request object (unused but kept for API consistency)
+---@return boolean, string? Success status and optional error message
 function motor._send_response(client, response, request)
+	---@diagnostic disable-next-line: unused-local
 	-- Build status line
 	local status_line = string.format("HTTP/1.1 %d %s\r\n", response.status, motor._get_status_text(response.status))
 
@@ -274,15 +296,18 @@ function motor._send_response(client, response, request)
 	local full_response = status_line .. headers_str .. "\r\n" .. body
 
 	-- Send response
-	local bytes_sent, err = client:send(full_response)
+	local bytes_sent, send_err = client:send(full_response)
 	if not bytes_sent then
-		return false, err
+		return false, send_err
 	end
 
 	return true
 end
 
 -- Send error response
+---@param client userdata TCP socket client
+---@param status integer HTTP status code
+---@param message string Error message
 function motor._send_error_response(client, status, message)
 	local response = {
 		status = status,
@@ -294,6 +319,8 @@ function motor._send_error_response(client, status, message)
 end
 
 -- Get HTTP status text
+---@param status integer HTTP status code
+---@return string Status text
 function motor._get_status_text(status)
 	local status_texts = {
 		[200] = "OK",
@@ -316,27 +343,39 @@ function motor._get_status_text(status)
 end
 
 -- Hot reload convenience functions
+---Enable hot reload functionality
 function motor.enable_hot_reload()
 	hot_reload.enable_dev_mode()
 end
 
+---Disable hot reload functionality
 function motor.disable_hot_reload()
 	hot_reload.disable_dev_mode()
 end
 
+---Watch a specific module for changes
+---@param module_name string Module name to watch
+---@param filepath string File path of the module
 function motor.watch_module(module_name, filepath)
 	hot_reload.watch_module(module_name, filepath)
 end
 
+---Watch a directory for Lua file changes
+---@param directory string Directory path to watch
+---@param module_prefix string? Module prefix for discovered files
 function motor.watch_directory(directory, module_prefix)
 	hot_reload.watch_directory(directory, module_prefix)
 end
 
+---Watch application files (controllers, models, config)
+---@param app_root string? Application root directory (default: ".")
 function motor.watch_app_files(app_root)
 	hot_reload.watch_app_files(app_root)
 end
 
 -- Serve with development mode (hot reload enabled)
+---@param opts MotorConfig|RequestHandler Server configuration or handler function
+---@param handler RequestHandler? Request handler function (if opts is config)
 function motor.serve_dev(opts, handler)
 	if type(opts) == "function" then
 		handler = opts
@@ -351,4 +390,3 @@ function motor.serve_dev(opts, handler)
 end
 
 return motor
-

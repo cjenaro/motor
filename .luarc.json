@@ -1,0 +1,55 @@
+{
+  "$schema": "https://raw.githubusercontent.com/LuaLS/lua-language-server/master/locale/en-us/setting.lua",
+  "Lua.runtime.version": "Lua 5.4",
+  "Lua.runtime.path": ["?.lua", "?/init.lua", "src/?.lua", "src/?/init.lua"],
+  "Lua.workspace.library": [
+    "${3rd}/luassert/library",
+    "${3rd}/busted/library",
+    "${3rd}/luasocket/library"
+  ],
+  "Lua.workspace.ignoreDir": [
+    "node_modules",
+    ".git",
+    "vendor",
+    "build",
+    "dist"
+  ],
+  "Lua.diagnostics.globals": [
+    "describe",
+    "it",
+    "before_each",
+    "after_each",
+    "setup",
+    "teardown",
+    "assert",
+    "spy",
+    "stub",
+    "mock",
+    "busted",
+    "pending",
+    "finally",
+    "Test"
+  ],
+  "Lua.diagnostics.disable": ["unused-local", "unused-vararg", "trailing-space", "lowercase-global"],
+  "Lua.diagnostics.severity": {
+    "undefined-field": "Warning",
+    "missing-fields": "Information",
+    "inject-field": "Warning"
+  },
+  "Lua.format.enable": true,
+  "Lua.format.defaultConfig": {
+    "indent_style": "space",
+    "indent_size": "4",
+    "max_line_length": "120",
+    "trailing_table_separator": "smart"
+  },
+  "Lua.completion.enable": true,
+  "Lua.completion.callSnippet": "Both",
+  "Lua.completion.keywordSnippet": "Both",
+  "Lua.hover.enable": true,
+  "Lua.signatureHelp.enable": true,
+  "Lua.semantic.enable": true,
+  "Lua.IntelliSense.traceBeSetted": true,
+  "Lua.IntelliSense.traceFieldInject": true,
+  "Lua.telemetry.enable": false
+}

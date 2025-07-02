@@ -1,9 +1,12 @@
 -- HTTP Parser for Motor
 -- Parses HTTP/1.1 requests into Lua tables
 
+---@class HttpParser
 local http_parser = {}
 
 -- Parse a complete HTTP request string
+---@param request_data string Raw HTTP request data
+---@return HttpRequest|nil, string? Parsed request or nil with error message
 function http_parser.parse_request(request_data)
 	if type(request_data) ~= "string" or request_data == "" then
 		return nil, "Empty or invalid request data"
@@ -26,8 +29,8 @@ function http_parser.parse_request(request_data)
 
 	-- Parse request line (first line)
 	local method, path, version = http_parser._parse_request_line(lines[1])
-	if not method then
-		return nil, "Invalid request line: " .. tostring(path)
+	if not method or not path then
+		return nil, "Invalid request line: " .. tostring(path or "unknown error")
 	end
 
 	-- Parse headers (remaining lines)
@@ -39,7 +42,7 @@ function http_parser.parse_request(request_data)
 		end
 	end
 
-	-- Parse query parameters from path
+	-- Parse query parameters from path (path is guaranteed to be non-nil here)
 	local clean_path, query_params = http_parser._parse_path_and_query(path)
 
 	-- Parse request body based on content-type
@@ -50,7 +53,7 @@ function http_parser.parse_request(request_data)
 		if content_type == "application/x-www-form-urlencoded" then
 			parsed_body = http_parser.parse_form_data(body_part)
 		elseif content_type == "application/json" then
-			local json_data, json_err = http_parser.parse_json(body_part)
+			local json_data = http_parser.parse_json(body_part)
 			if json_data then
 				parsed_body = json_data
 			else
@@ -77,6 +80,8 @@ function http_parser.parse_request(request_data)
 end
 
 -- Split text into lines, handling different line ending styles
+---@param text string Text to split into lines
+---@return string[] Array of lines
 function http_parser._split_lines(text)
 	local lines = {}
 	for line in string.gmatch(text, "[^\r\n]+") do
@@ -86,11 +91,13 @@ function http_parser._split_lines(text)
 end
 
 -- Parse the HTTP request line (GET /path HTTP/1.1)
+---@param line string Request line to parse
+---@return string?, string?, string?
 function http_parser._parse_request_line(line)
 	local method, path, version = string.match(line, "^(%S+)%s+(%S+)%s+(%S+)$")
 
 	if not method or not path or not version then
-		return nil, "Invalid request line format"
+		return nil, "Invalid request line format", nil
 	end
 
 	-- Validate HTTP method
@@ -105,18 +112,20 @@ function http_parser._parse_request_line(line)
 	}
 
 	if not valid_methods[string.upper(method)] then
-		return nil, "Invalid HTTP method: " .. method
+		return nil, "Invalid HTTP method: " .. method, nil
 	end
 
 	-- Validate HTTP version
 	if not string.match(version, "^HTTP/1%.[01]$") then
-		return nil, "Unsupported HTTP version: " .. version
+		return nil, "Unsupported HTTP version: " .. version, nil
 	end
 
 	return string.upper(method), path, version
 end
 
 -- Parse a header line (Name: Value)
+---@param line string Header line to parse
+---@return string|nil, string|nil Header name and value or nil for both if malformed
 function http_parser._parse_header_line(line)
 	local name, value = string.match(line, "^([^:]+):%s*(.*)$")
 
@@ -132,6 +141,8 @@ function http_parser._parse_header_line(line)
 end
 
 -- Parse path and query parameters
+---@param full_path string Full path with optional query string
+---@return string, table<string, string> Clean path and query parameters table
 function http_parser._parse_path_and_query(full_path)
 	local path, query_string = string.match(full_path, "^([^%?]*)%??(.*)$")
 
@@ -170,6 +181,8 @@ function http_parser._parse_path_and_query(full_path)
 end
 
 -- URL decode a string
+---@param str string? String to decode
+---@return string Decoded string
 function http_parser._url_decode(str)
 	if not str then
 		return ""
@@ -187,6 +200,8 @@ function http_parser._url_decode(str)
 end
 
 -- Parse URL-encoded form data (application/x-www-form-urlencoded)
+---@param body string Form data body
+---@return table<string, string|string[]> Parsed form data
 function http_parser.parse_form_data(body)
 	local form_data = {}
 
@@ -217,26 +232,30 @@ function http_parser.parse_form_data(body)
 end
 
 -- Parse JSON request body
+---@param body string JSON body
+---@return table|nil, string? Parsed JSON data or nil with error message
 function http_parser.parse_json(body)
 	if not body or body == "" then
 		return {}
 	end
 
 	-- Use dkjson for safe JSON parsing
-	local ok, json = pcall(require, "dkjson")
-	if not ok then
+	local require_ok, json = pcall(require, "dkjson")
+	if not require_ok then
 		return nil, "JSON library not available"
 	end
 
-	local result, pos, err = json.decode(body)
+	local result, _, decode_err = json.decode(body)
 	if result then
 		return result
 	else
-		return nil, "Invalid JSON: " .. tostring(err)
+		return nil, "Invalid JSON: " .. tostring(decode_err)
 	end
 end
 
 -- Get content type from headers
+---@param headers table<string, string> HTTP headers
+---@return string Content type (main type only, without parameters)
 function http_parser.get_content_type(headers)
 	local content_type = headers["content-type"] or ""
 	local main_type = string.match(content_type, "^([^;]+)")
@@ -244,4 +263,3 @@ function http_parser.get_content_type(headers)
 end
 
 return http_parser
-
